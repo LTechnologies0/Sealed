@@ -146,7 +146,7 @@ object ProfileIsolation {
         settings.builtInZoomControls = browser.zoomEnabled
         settings.displayZoomControls = false
         settings.useWideViewPort = true
-        settings.loadWithOverviewMode = true
+        settings.loadWithOverviewMode = false
         settings.allowFileAccess = false
         settings.allowContentAccess = false
         @Suppress("DEPRECATION")
@@ -169,11 +169,17 @@ object ProfileIsolation {
             WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, browser.colorScheme != "light")
         }
         if (browser.pixelPersona && WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
-            WebSettingsCompat.setUserAgentMetadata(settings, metadata())
+            WebSettingsCompat.setUserAgentMetadata(settings, metadata(desktop = false))
         }
     }
 
-    private fun metadata(): UserAgentMetadata {
+    fun applyClientHints(webView: WebView, browser: BrowserSettings, desktop: Boolean) {
+        if (!browser.pixelPersona) return
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) return
+        WebSettingsCompat.setUserAgentMetadata(webView.settings, metadata(desktop))
+    }
+
+    private fun metadata(desktop: Boolean): UserAgentMetadata {
         fun brand(name: String, major: String, full: String) = UserAgentMetadata.BrandVersion.Builder()
             .setBrand(name)
             .setMajorVersion(major)
@@ -188,11 +194,11 @@ object ProfileIsolation {
                 ),
             )
             .setFullVersion(PixelPersona.CHROME_FULL)
-            .setPlatform("Android")
-            .setPlatformVersion(PixelPersona.PLATFORM_VERSION)
-            .setArchitecture("")
-            .setModel(PixelPersona.MODEL)
-            .setMobile(true)
+            .setPlatform(if (desktop) "Linux" else "Android")
+            .setPlatformVersion(if (desktop) "" else PixelPersona.PLATFORM_VERSION)
+            .setArchitecture(if (desktop) "x86" else "")
+            .setModel(if (desktop) "" else PixelPersona.MODEL)
+            .setMobile(!desktop)
             .setBitness(64)
             .setWow64(false)
             .build()

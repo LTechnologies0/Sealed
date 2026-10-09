@@ -31,9 +31,23 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Row
@@ -73,6 +87,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import app.sealed.data.BlockLog
@@ -90,6 +107,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class WebAppActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         val id = intent.getStringExtra(EXTRA_ID)
         val app = id?.let { WebAppRepository(this).get(it) }
         if (app == null) {
@@ -131,6 +149,7 @@ private class JsAsk(
 )
 
 @SuppressLint("SetJavaScriptEnabled")
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun IsolatedWebApp(app: InstalledWebApp) {
     val activity = androidx.compose.ui.platform.LocalContext.current as ComponentActivity
@@ -263,8 +282,23 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
         onDispose { activity.lifecycle.removeObserver(observer) }
     }
 
+    Box(Modifier.fillMaxSize()) {
     Scaffold(
+        modifier = Modifier.imePadding(),
+        contentWindowInsets = WindowInsets.statusBars
+            .union(WindowInsets.displayCutout)
+            .union(WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal)),
         bottomBar = {
+            val barSides = if (WindowInsets.isImeVisible) {
+                WindowInsetsSides.Horizontal
+            } else {
+                WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom
+            }
+            Box(
+                Modifier.windowInsetsPadding(
+                    WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(barSides),
+                ),
+            ) {
             BrowserBar(
                 loading = loading,
                 onBack = { webViewRef?.takeIf { it.canGoBack() }?.goBack() },
@@ -280,8 +314,15 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
                 onDesktop = {
                     val next = !desktop
                     desktop = next
-                    webViewRef?.settings?.userAgentString =
-                        if (next) WebAppActivity.DESKTOP_AGENT else app.settings.resolvedUserAgent()
+                        webViewRef?.let { page ->
+                        page.settings.apply {
+                            userAgentString =
+                                if (next) WebAppActivity.DESKTOP_AGENT else app.settings.resolvedUserAgent()
+                            loadWithOverviewMode = next
+                            useWideViewPort = true
+                        }
+                        ProfileIsolation.applyClientHints(page, app.settings, desktop = next)
+                    }
                     webViewRef?.reload()
                     menu = false
                 },
@@ -298,6 +339,7 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
                     menu = false
                 },
             )
+            }
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
@@ -306,6 +348,13 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
                 factory = { context ->
                     WebView(context).apply {
                         webViewRef = this
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
+                        isFocusable = true
+                        isFocusableInTouchMode = true
+                        ViewCompat.setOnApplyWindowInsetsListener(this) { _, _ -> WindowInsetsCompat.CONSUMED }
                         setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
                         val profile = ProfileIsolation.bind(this, app.profileName, app.settings, app.host)
                         val secrets = SecretStore(context.applicationContext)
@@ -503,11 +552,13 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
                                 customCallback?.onCustomViewHidden()
                                 customView = view
                                 customCallback = callback
+                                systemBars(activity, show = false)
                             }
 
                             override fun onHideCustomView() {
                                 customView = null
                                 customCallback = null
+                                systemBars(activity, show = true)
                             }
 
                             override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
@@ -557,25 +608,6 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
                     view.destroy()
                 },
             )
-            customView?.let { shown ->
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = { FrameLayout(it) },
-                    update = { frame ->
-                        if (shown.parent !== frame) {
-                            (shown.parent as? ViewGroup)?.removeView(shown)
-                            frame.removeAllViews()
-                            frame.addView(
-                                shown,
-                                FrameLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT,
-                                    ViewGroup.LayoutParams.MATCH_PARENT,
-                                ),
-                            )
-                        }
-                    },
-                )
-            }
             if (loading) {
                 LinearProgressIndicator(
                     progress = { progress / 100f },
@@ -616,6 +648,34 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
+        }
+    }
+        customView?.let { shown ->
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    FrameLayout(ctx).apply {
+                        setBackgroundColor(android.graphics.Color.BLACK)
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
+                    }
+                },
+                update = { frame ->
+                    if (shown.parent !== frame) {
+                        (shown.parent as? ViewGroup)?.removeView(shown)
+                        frame.removeAllViews()
+                        frame.addView(
+                            shown,
+                            FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            ),
+                        )
+                    }
+                },
+            )
         }
     }
 
@@ -684,7 +744,10 @@ private fun BrowserBar(
     onCopy: () -> Unit,
     onPrint: () -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Précédent") }
         IconButton(onClick = onForward) { Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Suivant") }
         IconButton(onClick = onReload) {
@@ -700,6 +763,17 @@ private fun BrowserBar(
                 DropdownMenuItem(text = { Text("Imprimer") }, onClick = onPrint)
             }
         }
+    }
+}
+
+private fun systemBars(activity: ComponentActivity, show: Boolean) {
+    val controller = WindowInsetsControllerCompat(activity.window, activity.window.decorView)
+    val bars = WindowInsetsCompat.Type.systemBars()
+    if (show) {
+        controller.show(bars)
+    } else {
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(bars)
     }
 }
 

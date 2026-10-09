@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -21,7 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.AlertDialog
+import androidx.compose.ui.window.Dialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -151,7 +152,8 @@ private fun Home(repo: WebAppRepository, defaults: SettingsRepository) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             LazyColumn(
-                contentPadding = PaddingValues(vertical = 12.dp),
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(apps, key = { it.id }) { app ->
@@ -238,14 +240,22 @@ private fun AddDialog(
     var password by remember { mutableStateOf("") }
     var cookies by remember { mutableStateOf("") }
     val valid = UrlPolicy.normalizeStartUrl(url) != null
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Sceller un site") },
-        text = {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .imePadding(),
+            shape = MaterialTheme.shapes.extraLarge,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
             Column(
-                Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                Modifier
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(24.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                Text("Sceller un site", style = MaterialTheme.typography.headlineSmall)
                 OutlinedTextField(url, { url = it }, Modifier.fillMaxWidth(), label = { Text("URL https") }, singleLine = true)
                 OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("Nom") }, singleLine = true)
                 OutlinedTextField(username, { username = it }, Modifier.fillMaxWidth(), label = { Text("E-mail ou identifiant") }, singleLine = true)
@@ -261,13 +271,13 @@ private fun AddDialog(
                 if (url.isNotBlank() && !valid) {
                     Text("Seules les URL https vers un nom de domaine sont acceptées.")
                 }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("Annuler") }
+                    Button(enabled = valid, onClick = { onSave(title, url, username, password, cookies) }) {
+                        Text("Installer")
+                    }
+                }
             }
-        },
-        confirmButton = {
-            Button(enabled = valid, onClick = { onSave(title, url, username, password, cookies) }) {
-                Text("Installer")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } },
-    )
+        }
+    }
 }
