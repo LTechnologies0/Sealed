@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: >-
+            platform-tools
+            platforms;android-35
+            build-tools;35.0.0
+            ndk;27.3.13750724
+            cmake;3.22.1
+
+      - name: Create local.properties
+        run: echo "sdk.dir=${ANDROID_SDK_ROOT}" >> local.properties
+
+      - name: Test and assemble debug
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+
+      - name: Verify MTE is built in
+        run: |
+          chmod +x scripts/verify-memtag-manifest.sh
+          ./scripts/verify-memtag-manifest.sh \
+            app/build/intermediates/merged_manifest/debug/processDebugMainManifest/AndroidManifest.xml
+
+      - name: Upload debug APKs
+        uses: actions/upload-artifact@v7
+        with:
+          name: sealed-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
