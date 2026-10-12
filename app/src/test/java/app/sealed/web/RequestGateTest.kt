@@ -1,5 +1,6 @@
 package app.sealed.web
 
+import app.sealed.model.BrowserSettings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -64,13 +65,37 @@ class RequestGateTest {
     }
 
     @Test
-    fun blocksCleartextAndIgnoresBlob() {
+    fun rejectsNonHttpsSchemes() {
+        val host = "example.com"
+        assertEquals("scheme", RequestGate.blockReason("http://example.com/", host, lockToHost = false, blockTrackers = true))
+        assertEquals("scheme", RequestGate.blockReason("javascript:alert(1)", host, lockToHost = false, blockTrackers = true))
+        assertEquals("scheme", RequestGate.blockReason("intent://scan/#Intent;end", host, lockToHost = false, blockTrackers = true))
+        assertEquals("scheme", RequestGate.blockReason("file:///sdcard/secret", host, lockToHost = false, blockTrackers = true))
+        assertEquals("scheme", RequestGate.blockReason("content://media/external/file", host, lockToHost = false, blockTrackers = true))
+        assertEquals("scheme", RequestGate.blockReason("data:text/html,hi", host, lockToHost = false, blockTrackers = true))
+        assertEquals("scheme", RequestGate.blockReason("blob:https://example.com/id", host, lockToHost = false, blockTrackers = true))
+        assertNull(RequestGate.blockReason("https://example.com/", host, lockToHost = true, blockTrackers = true))
+    }
+
+    @Test
+    fun popupTargetUsesTheSameHttpsAllowlist() {
+        val locked = BrowserSettings(lockToHost = true, blockTrackers = true)
         assertEquals(
-            "scheme",
-            RequestGate.blockReason("http://example.com/", "example.com", lockToHost = false, blockTrackers = true),
+            "https://example.com/ok",
+            RequestGate.popupTarget("https://example.com/ok", "example.com", locked),
         )
-        assertNull(
-            RequestGate.blockReason("blob:https://example.com/id", "example.com", lockToHost = true, blockTrackers = true),
+        assertNull(RequestGate.popupTarget("http://example.com/", "example.com", locked))
+        assertNull(RequestGate.popupTarget("javascript:alert(1)", "example.com", locked))
+        assertNull(RequestGate.popupTarget("intent://scan/#Intent;end", "example.com", locked))
+        assertNull(RequestGate.popupTarget("file:///sdcard/x", "example.com", locked))
+        assertNull(RequestGate.popupTarget("content://media/x", "example.com", locked))
+        assertNull(RequestGate.popupTarget("data:text/html,hi", "example.com", locked))
+        assertNull(RequestGate.popupTarget("blob:https://example.com/id", "example.com", locked))
+        assertNull(RequestGate.popupTarget("https://evil.test/", "example.com", locked))
+        val open = BrowserSettings(lockToHost = false, blockTrackers = false)
+        assertEquals(
+            "https://cdn.example.net/a",
+            RequestGate.popupTarget("https://cdn.example.net/a", "example.com", open),
         )
     }
 }

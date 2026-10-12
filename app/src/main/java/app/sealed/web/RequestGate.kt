@@ -1,5 +1,6 @@
 package app.sealed.web
 
+import app.sealed.model.BrowserSettings
 import java.net.URI
 
 enum class ReferrerMode { NO_REFERRER, STRICT_ORIGIN, OFF }
@@ -19,12 +20,21 @@ object RequestGate {
 
     fun blockReason(url: String, lockHost: String, lockToHost: Boolean, blockTrackers: Boolean): String? {
         val uri = runCatching { URI(url) }.getOrNull() ?: return "url"
-        val scheme = uri.scheme?.lowercase()
-        if (scheme == "http") return "scheme"
-        if (scheme != "https") return null
+        val scheme = uri.scheme?.lowercase() ?: return "scheme"
+        if (scheme != "https") return "scheme"
         val host = uri.host?.lowercase() ?: return "host"
         if (blockTrackers && TrackerList.blocks(host)) return "tracker"
         if (lockToHost && host != lockHost && !host.endsWith(".$lockHost")) return "domain"
         return null
+    }
+
+    fun popupTarget(url: String, lockHost: String, settings: BrowserSettings): String? {
+        val reason = blockReason(
+            url,
+            lockHost,
+            lockToHost = settings.lockToHost,
+            blockTrackers = settings.blockTrackers,
+        )
+        return if (reason == null) url else null
     }
 }

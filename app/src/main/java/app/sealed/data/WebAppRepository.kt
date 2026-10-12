@@ -1,27 +1,31 @@
 package app.sealed.data
 
 import android.content.Context
+import android.util.AtomicFile
 import app.sealed.model.BrowserSettings
 import app.sealed.model.InstalledWebApp
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 class WebAppRepository(context: Context) {
     private val file = File(context.filesDir, "webapps.json")
+    private val atomic = AtomicFile(file)
 
-    fun list(): List<InstalledWebApp> {
+    fun list(): List<InstalledWebApp> = runCatching {
         if (!file.exists()) return emptyList()
-        val raw = file.readText()
+        val raw = atomic.readFully().toString(StandardCharsets.UTF_8)
         if (raw.isBlank()) return emptyList()
         val array = JSONArray(raw)
-        return buildList {
+        buildList {
             for (i in 0 until array.length()) {
                 add(array.getJSONObject(i).toApp())
             }
         }.sortedBy { it.title.lowercase() }
-    }
+    }.getOrDefault(emptyList())
 
     fun get(id: String): InstalledWebApp? = list().firstOrNull { it.id == id }
 
@@ -55,7 +59,17 @@ class WebAppRepository(context: Context) {
     private fun write(apps: List<InstalledWebApp>) {
         val array = JSONArray()
         apps.forEach { array.put(it.toJson()) }
-        file.writeText(array.toString())
+        val bytes = array.toString().toByteArray(StandardCharsets.UTF_8)
+        var stream: FileOutputStream? = null
+        try {
+            stream = atomic.startWrite()
+            stream.write(bytes)
+            atomic.finishWrite(stream)
+            stream = null
+        } catch (error: Throwable) {
+            stream?.let { atomic.failWrite(it) }
+            throw error
+        }
     }
 
     private fun InstalledWebApp.toJson() = JSONObject()

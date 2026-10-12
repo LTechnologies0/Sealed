@@ -139,7 +139,7 @@ fun BrowserSettingsScreen(
                     minLines = 3,
                 )
                 Text(
-                    "Les cookies sont posés sur ce domaine avant l’ouverture. L’identifiant et le mot de passe remplissent le formulaire qui contient un champ mot de passe. Le bouton de connexion reste à toi.",
+                    "Les cookies sont posés sur ce domaine avant l’ouverture. L’identifiant et le mot de passe ne remplissent que le cadre principal, après un toucher, sur un champ visible et focalisé. Le bouton de connexion reste à toi.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -152,8 +152,9 @@ fun BrowserSettingsScreen(
             Toggle("Protection contre la navigation dangereuse", draft.safeBrowsing) { draft = draft.copy(safeBrowsing = it) }
             Toggle("Effacer cookies, cache et stockage à la fermeture", draft.clearOnExit) { draft = draft.copy(clearOnExit = it) }
             Toggle("Bloquer les hôtes de mesure d’audience", draft.blockTrackers) { draft = draft.copy(blockTrackers = it) }
+            Toggle("Couper WebRTC LAN (script)", draft.blockWebRtcLan) { draft = draft.copy(blockWebRtcLan = it) }
             Text(
-                "HTTPS uniquement. Le HTTP, le contenu mixte et les pixels listés sont refusés, y compris depuis un service worker. WebRTC et l’adresse IP ne sont pas coupés : le WebView ne le permet pas sans script détectable.",
+                "HTTPS uniquement. Le HTTP, intent, javascript, fichier, content, data et blob sont refusés. Le trafic passe par OnionVPN SOCKS 127.0.0.1:18202 : si le proxy est down, la page n’ouvre pas. DNT, GPC et la langue sont posés sur les navigations principales et dans le document ; les sous-ressources HTTP du WebView ne permettent pas d’ajouter ces en-têtes. Le script WebRTC est détectable.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Section("Capteurs de cette webapp")

@@ -8,9 +8,33 @@ object LoginFill {
         val pass = JSONObject.quote(password)
         return """
             (function () {
+              if (window.top !== window) return;
               var user = $user;
               var pass = $pass;
-              var done = false;
+              var gesture = false;
+              var timer = 0;
+              function arm() {
+                gesture = true;
+                if (timer) clearTimeout(timer);
+                timer = setTimeout(function () { gesture = false; }, 2000);
+              }
+              function visible(el) {
+                if (!el || el.disabled) return false;
+                var style = window.getComputedStyle(el);
+                if (!style || style.visibility === "hidden" || style.display === "none" || Number(style.opacity) === 0) return false;
+                var box = el.getBoundingClientRect();
+                return box.width > 0 && box.height > 0;
+              }
+              function inputOf(target) {
+                if (!target) return null;
+                if (target.tagName === "INPUT") return target;
+                if (target.control && target.control.tagName === "INPUT") return target.control;
+                if (target.closest) {
+                  var label = target.closest("label");
+                  if (label && label.control && label.control.tagName === "INPUT") return label.control;
+                }
+                return null;
+              }
               function setValue(el, value) {
                 var proto = Object.getPrototypeOf(el);
                 var desc = Object.getOwnPropertyDescriptor(proto, "value");
@@ -19,36 +43,31 @@ object LoginFill {
                 el.dispatchEvent(new Event("input", { bubbles: true }));
                 el.dispatchEvent(new Event("change", { bubbles: true }));
               }
-              var observer = null;
-              function fill() {
-                if (done) return;
-                var passwords = document.querySelectorAll("input[type='password']");
-                for (var i = 0; i < passwords.length; i++) {
-                  var pw = passwords[i];
-                  if (pw.disabled || pw.value) continue;
-                  var scope = pw.form || (pw.closest && pw.closest("form")) || document;
+              function fillFrom(raw) {
+                if (window.top !== window) return;
+                var target = inputOf(raw);
+                if (!gesture || !target || !visible(target) || target !== document.activeElement) return;
+                var scope = target.form || (target.closest && target.closest("form")) || document;
+                var type = (target.getAttribute("type") || "text").toLowerCase();
+                if (type === "password") {
+                  if (pass) setValue(target, pass);
                   var fields = scope.querySelectorAll("input");
                   var chosen = null;
-                  for (var j = 0; j < fields.length; j++) {
-                    var el = fields[j];
-                    if (el === pw) break;
-                    var type = (el.getAttribute("type") || "text").toLowerCase();
-                    if (type === "hidden" || type === "password" || type === "checkbox" || type === "radio" || type === "submit" || type === "button") continue;
-                    if (type === "email" || type === "text" || type === "tel") chosen = el;
+                  for (var i = 0; i < fields.length; i++) {
+                    var el = fields[i];
+                    if (el === target) break;
+                    var other = (el.getAttribute("type") || "text").toLowerCase();
+                    if (other === "hidden" || other === "password" || other === "checkbox" || other === "radio" || other === "submit" || other === "button") continue;
+                    if ((other === "email" || other === "text" || other === "tel") && visible(el)) chosen = el;
                   }
-                  if (chosen && !chosen.value && user) setValue(chosen, user);
-                  if (pass) setValue(pw, pass);
-                  done = true;
-                  if (observer) observer.disconnect();
+                  if (chosen && user) setValue(chosen, user);
                   return;
                 }
+                if ((type === "email" || type === "text" || type === "tel") && user) setValue(target, user);
               }
-              var root = document.documentElement;
-              if (root) {
-                observer = new MutationObserver(fill);
-                observer.observe(root, { childList: true, subtree: true });
-              }
-              fill();
+              document.addEventListener("pointerdown", arm, true);
+              document.addEventListener("focusin", function (event) { fillFrom(event.target); }, true);
+              document.addEventListener("click", function (event) { fillFrom(event.target); }, true);
             })();
         """.trimIndent()
     }

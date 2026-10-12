@@ -6,12 +6,11 @@ data class BrowserSettings(
     val pixelPersona: Boolean = true,
     val customUserAgent: String = "",
     val language: String = "en-US",
-    val timeZone: String = "America/Los_Angeles",
     val blockThirdPartyCookies: Boolean = true,
     val acceptCookies: Boolean = true,
     val doNotTrack: Boolean = true,
     val globalPrivacyControl: Boolean = true,
-    val safeBrowsing: Boolean = true,
+    val safeBrowsing: Boolean = false,
     val javascript: Boolean = true,
     val images: Boolean = true,
     val popups: Boolean = false,
@@ -72,7 +71,6 @@ data class BrowserSettings(
         .put("pixelPersona", pixelPersona)
         .put("customUserAgent", customUserAgent)
         .put("language", language)
-        .put("timeZone", timeZone)
         .put("blockThirdPartyCookies", blockThirdPartyCookies)
         .put("acceptCookies", acceptCookies)
         .put("doNotTrack", doNotTrack)
@@ -114,7 +112,6 @@ data class BrowserSettings(
                 pixelPersona = json.optBoolean("pixelPersona", base.pixelPersona),
                 customUserAgent = json.optString("customUserAgent", base.customUserAgent),
                 language = json.optString("language", base.language).ifBlank { base.language },
-                timeZone = json.optString("timeZone", base.timeZone).ifBlank { base.timeZone },
                 blockThirdPartyCookies = json.optBoolean("blockThirdPartyCookies", base.blockThirdPartyCookies),
                 acceptCookies = json.optBoolean("acceptCookies", base.acceptCookies),
                 doNotTrack = json.optBoolean("doNotTrack", base.doNotTrack),
@@ -158,6 +155,8 @@ object PixelPersona {
     const val CHROME_FULL = "140.0.7339.155"
     const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android 16; Pixel 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$CHROME_FULL Mobile Safari/537.36"
+    const val DESKTOP_AGENT =
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$CHROME_FULL Safari/537.36"
     const val MODEL = "Pixel 10"
     const val PLATFORM_VERSION = "16.0.0"
 }

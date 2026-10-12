@@ -1,23 +1,19 @@
 package app.sealed
 
 import android.annotation.SuppressLint
-import android.app.DownloadManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.os.Environment
 import android.print.PrintManager
 import android.view.View
 import android.view.ViewGroup
-import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
 import android.webkit.JsPromptResult
 import android.webkit.JsResult
 import android.webkit.PermissionRequest
-import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -92,23 +88,34 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import app.sealed.data.BlockLog
 import app.sealed.data.SecretStore
 import app.sealed.data.WebAppRepository
 import app.sealed.web.SensorGate
 import app.sealed.model.BrowserSettings
 import app.sealed.model.InstalledWebApp
+import app.sealed.model.PixelPersona
 import app.sealed.ui.theme.SealedTheme
+import app.sealed.ui.theme.applyColorScheme
 import app.sealed.web.CookieLines
+import app.sealed.web.FileChooserMimes
+import app.sealed.web.InAppDownload
+import app.sealed.web.OnionProxy
 import app.sealed.web.ProfileIsolation
 import app.sealed.web.RequestGate
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 class WebAppActivity : ComponentActivity() {
+    private var openedId: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val id = intent.getStringExtra(EXTRA_ID)
+        openedId = id
         val app = id?.let { WebAppRepository(this).get(it) }
         if (app == null) {
             finish()
@@ -119,17 +126,25 @@ class WebAppActivity : ComponentActivity() {
             finish()
             return
         }
+        applyColorScheme(app.settings.colorScheme)
         setContent {
-            SealedTheme {
+            SealedTheme(colorScheme = app.settings.colorScheme) {
                 IsolatedWebApp(app)
             }
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val newId = intent.getStringExtra(EXTRA_ID)
+        if (newId != null && newId != openedId) {
+            setIntent(intent)
+            recreate()
+        }
+    }
+
     companion object {
         const val EXTRA_ID = "app.sealed.EXTRA_ID"
-        const val DESKTOP_AGENT =
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
     }
 }
 
@@ -153,37 +168,47 @@ private class JsAsk(
 @Composable
 private fun IsolatedWebApp(app: InstalledWebApp) {
     val activity = androidx.compose.ui.platform.LocalContext.current as ComponentActivity
-    var progress by mutableIntStateOf(0)
-    var blocked by mutableStateOf<String?>(null)
-    var pageError by mutableStateOf<String?>(null)
-    var webViewRef by mutableStateOf<WebView?>(null)
-    var loading by mutableStateOf(false)
-    var menu by mutableStateOf(false)
-    var desktop by mutableStateOf(false)
-    var findQuery by mutableStateOf<String?>(null)
-    var jsAsk by mutableStateOf<JsAsk?>(null)
-    var customView by mutableStateOf<View?>(null)
-    var customCallback by mutableStateOf<WebChromeClient.CustomViewCallback?>(null)
+    var progress by remember { mutableIntStateOf(0) }
+    var blocked by remember { mutableStateOf<String?>(null) }
+    var pageError by remember { mutableStateOf<String?>(null) }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var loading by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+    var desktop by remember { mutableStateOf(false) }
+    var findQuery by remember { mutableStateOf<String?>(null) }
+    var jsAsk by remember { mutableStateOf<JsAsk?>(null) }
+    var customView by remember { mutableStateOf<View?>(null) }
+    var customCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
     var fileCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
     var pendingPermission by remember { mutableStateOf<PermissionRequest?>(null) }
     var pendingGrant by remember { mutableStateOf<Array<String>?>(null) }
     var pendingGeo by remember { mutableStateOf<Pair<String?, GeolocationPermissions.Callback>?>(null) }
     var sensorPrompt by remember { mutableStateOf<SensorPrompt?>(null) }
     val settingsBox = remember { mutableStateOf(app.settings) }
+    val liveSettings = remember { AtomicReference(app.settings) }
     val pendingStart = remember { arrayOfNulls<Runnable>(1) }
+    val grantedUris = remember { mutableListOf<Uri>() }
 
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    fun publish(next: BrowserSettings) {
+        settingsBox.value = next
+        liveSettings.set(next)
+    }
+
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         val callback = fileCallback
         fileCallback = null
-        if (uri != null) {
-            runCatching {
-                activity.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            }
-        }
+        if (uri != null) grantedUris.add(uri)
         callback?.onReceiveValue(uri?.let { arrayOf(it) })
+    }
+    val multiPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        val callback = fileCallback
+        fileCallback = null
+        if (uris.isEmpty()) {
+            callback?.onReceiveValue(null)
+        } else {
+            grantedUris.addAll(uris)
+            callback?.onReceiveValue(uris.toTypedArray())
+        }
     }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -213,7 +238,7 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
     }
 
     fun saveSensors(next: BrowserSettings, page: WebView) {
-        settingsBox.value = next
+        publish(next)
         WebAppRepository(activity.applicationContext).update(app.copy(settings = next))
         page.settings.setGeolocationEnabled(
             next.locationMode == SensorGate.ASK || next.locationMode == SensorGate.ALLOW,
@@ -314,14 +339,14 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
                 onDesktop = {
                     val next = !desktop
                     desktop = next
-                        webViewRef?.let { page ->
+                    webViewRef?.let { page ->
                         page.settings.apply {
                             userAgentString =
-                                if (next) WebAppActivity.DESKTOP_AGENT else app.settings.resolvedUserAgent()
+                                if (next) PixelPersona.DESKTOP_AGENT else liveSettings.get().resolvedUserAgent()
                             loadWithOverviewMode = next
                             useWideViewPort = true
                         }
-                        ProfileIsolation.applyClientHints(page, app.settings, desktop = next)
+                        ProfileIsolation.applyClientHints(page, liveSettings.get(), desktop = next)
                     }
                     webViewRef?.reload()
                     menu = false
@@ -356,26 +381,39 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
                         isFocusableInTouchMode = true
                         ViewCompat.setOnApplyWindowInsetsListener(this) { _, _ -> WindowInsetsCompat.CONSUMED }
                         setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
-                        val profile = ProfileIsolation.bind(this, app.profileName, app.settings, app.host)
+                        val initial = liveSettings.get()
+                        val profile = ProfileIsolation.bind(this, app.profileName, initial, app.host)
+                        if (initial.clearOnExit) ProfileIsolation.wipeSession(this)
                         val secrets = SecretStore(context.applicationContext)
                         ProfileIsolation.installLogin(this, app.host, secrets.username(app.id), secrets.password(app.id))
                         val cookies = CookieLines.normalize(secrets.cookies(app.id), app.host)
-                        val headers = ProfileIsolation.navigationHeaders(app.settings)
                         val started = AtomicBoolean(false)
                         val start = Runnable {
-                            if (started.compareAndSet(false, true)) loadUrl(app.startUrl, headers)
+                            if (started.compareAndSet(false, true)) {
+                                loadUrl(app.startUrl, ProfileIsolation.navigationHeaders(liveSettings.get()))
+                            }
                         }
                         pendingStart[0] = start
-                        ProfileIsolation.seedCookies(profile, "https://${app.host}/", cookies) { post(start) }
-                        postDelayed(start, 1500)
+                        OnionProxy.install(
+                            onReady = {
+                                post {
+                                    ProfileIsolation.seedCookies(profile, "https://${app.host}/", cookies) { post(start) }
+                                    postDelayed(start, 1500)
+                                }
+                            },
+                            onFail = { message ->
+                                post { pageError = message }
+                            },
+                        )
                         val log = BlockLog(context.applicationContext)
                         webViewClient = object : WebViewClient() {
                             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                                val live = liveSettings.get()
                                 val reason = RequestGate.blockReason(
                                     request.url.toString(),
                                     app.host,
-                                    app.settings.lockToHost,
-                                    blockTrackers = false,
+                                    lockToHost = live.lockToHost && request.isForMainFrame,
+                                    blockTrackers = live.blockTrackers,
                                 )
                                 if (reason == null) return false
                                 blocked = request.url.host ?: request.url.toString()
@@ -385,9 +423,9 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
                             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                                 val response = ProfileIsolation.blockedResponse(
                                     request.url.toString(),
-                                    app.settings,
+                                    liveSettings.get(),
                                     app.host,
-                                    navigation = false,
+                                    navigation = request.isForMainFrame,
                                 )
                                 if (response != null) request.url.host?.let { log.append(app.profileName, it) }
                                 return response
@@ -527,19 +565,57 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
                             ): Boolean {
                                 fileCallback?.onReceiveValue(null)
                                 fileCallback = filePathCallback
-                                val accept = fileChooserParams?.acceptTypes?.filter { it.isNotBlank() }?.toTypedArray()
-                                filePicker.launch(if (accept.isNullOrEmpty()) arrayOf("*/*") else accept)
+                                val accept = FileChooserMimes.filters(fileChooserParams?.acceptTypes)
+                                val mime = accept.firstOrNull { it != "*/*" && '/' in it } ?: "*/*"
+                                if (fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE) {
+                                    multiPicker.launch(mime)
+                                } else {
+                                    filePicker.launch(mime)
+                                }
                                 return true
                             }
 
                             override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message?): Boolean {
-                                if (!app.settings.popups || resultMsg == null) return false
+                                if (!liveSettings.get().popups || !isUserGesture || resultMsg == null) return false
                                 val probe = WebView(view.context)
+                                if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+                                    WebViewCompat.setProfile(probe, WebViewCompat.getProfile(view).name)
+                                }
                                 probe.webViewClient = object : WebViewClient() {
                                     override fun shouldOverrideUrlLoading(popup: WebView, request: WebResourceRequest): Boolean {
-                                        view.loadUrl(request.url.toString())
-                                        probe.destroy()
+                                        val allowed = RequestGate.popupTarget(
+                                            request.url.toString(),
+                                            app.host,
+                                            liveSettings.get(),
+                                        )
+                                        if (allowed != null) {
+                                            view.loadUrl(allowed, ProfileIsolation.navigationHeaders(liveSettings.get()))
+                                        } else {
+                                            blocked = request.url.host ?: request.url.toString()
+                                        }
+                                        destroyPopup(popup)
                                         return true
+                                    }
+
+                                    override fun shouldInterceptRequest(popup: WebView, request: WebResourceRequest): WebResourceResponse? {
+                                        val allowed = RequestGate.popupTarget(
+                                            request.url.toString(),
+                                            app.host,
+                                            liveSettings.get(),
+                                        )
+                                        if (allowed != null) return null
+                                        popup.post {
+                                            blocked = request.url.host ?: request.url.toString()
+                                            destroyPopup(popup)
+                                        }
+                                        return WebResourceResponse(
+                                            "text/plain",
+                                            "utf-8",
+                                            403,
+                                            "Blocked",
+                                            emptyMap(),
+                                            ByteArray(0).inputStream(),
+                                        )
                                     }
                                 }
                                 val transport = resultMsg.obj as WebView.WebViewTransport
@@ -579,7 +655,23 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
                             }
                         }
                         setDownloadListener { url, _, contentDisposition, mime, _ ->
-                            download(context, url, contentDisposition, mime, CookieManager.getInstance().getCookie(url))
+                            val cookie = runCatching {
+                                WebViewCompat.getProfile(this).cookieManager.getCookie(url)
+                            }.getOrNull()
+                            InAppDownload.start(
+                                context = context,
+                                profileName = app.profileName,
+                                url = url,
+                                disposition = contentDisposition,
+                                mime = mime,
+                                cookie = cookie,
+                                onDone = { file ->
+                                    post { Toast.makeText(context, file.name, Toast.LENGTH_SHORT).show() }
+                                },
+                                onFail = {
+                                    post { Toast.makeText(context, "Téléchargement refusé", Toast.LENGTH_SHORT).show() }
+                                },
+                            )
                         }
                         setOnLongClickListener {
                             val hit = hitTestResult
@@ -591,7 +683,7 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
                                 false
                             }
                         }
-                        profile.cookieManager.setAcceptThirdPartyCookies(this, !app.settings.blockThirdPartyCookies)
+                        profile.cookieManager.setAcceptThirdPartyCookies(this, !initial.blockThirdPartyCookies)
                     }
                 },
                 onRelease = { view ->
@@ -602,10 +694,18 @@ private fun IsolatedWebApp(app: InstalledWebApp) {
                     pendingPermission = null
                     pendingGeo?.second?.invoke(pendingGeo?.first, false, false)
                     pendingGeo = null
-                    if (app.settings.clearOnExit) ProfileIsolation.wipeSession(view)
-                    view.onPause()
-                    view.pauseTimers()
-                    view.destroy()
+                    grantedUris.forEach { uri ->
+                        runCatching {
+                            activity.revokeUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                    }
+                    grantedUris.clear()
+                    if (activity.isFinishing) {
+                        if (liveSettings.get().clearOnExit) ProfileIsolation.wipeSession(view)
+                        view.onPause()
+                        view.pauseTimers()
+                        view.destroy()
+                    }
                 },
             )
             if (loading) {
@@ -766,6 +866,17 @@ private fun BrowserBar(
     }
 }
 
+private fun destroyPopup(popup: WebView) {
+    popup.post {
+        runCatching {
+            popup.stopLoading()
+            popup.webChromeClient = null
+            popup.webViewClient = WebViewClient()
+            popup.destroy()
+        }
+    }
+}
+
 private fun systemBars(activity: ComponentActivity, show: Boolean) {
     val controller = WindowInsetsControllerCompat(activity.window, activity.window.decorView)
     val bars = WindowInsetsCompat.Type.systemBars()
@@ -797,18 +908,6 @@ private fun resourcePermission(resource: String): String? = when (resource) {
     PermissionRequest.RESOURCE_VIDEO_CAPTURE -> android.Manifest.permission.CAMERA
     PermissionRequest.RESOURCE_AUDIO_CAPTURE -> android.Manifest.permission.RECORD_AUDIO
     else -> null
-}
-
-private fun download(context: Context, url: String, disposition: String, mime: String, cookie: String?) {
-    val name = URLUtil.guessFileName(url, disposition, mime)
-    val request = DownloadManager.Request(Uri.parse(url))
-        .setMimeType(mime)
-        .setTitle(name)
-        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-        .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, name)
-    cookie?.let { request.addRequestHeader("Cookie", it) }
-    val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-    manager.enqueue(request)
 }
 
 private fun share(context: Context, url: String) {

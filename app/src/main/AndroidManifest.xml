@@ -40,6 +40,7 @@
             android:name=".WebAppActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|locale|layoutDirection|uiMode"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Sealed">
             <intent-filter>

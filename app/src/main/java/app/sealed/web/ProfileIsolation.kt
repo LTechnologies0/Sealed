@@ -9,15 +9,19 @@ import android.webkit.WebStorage
 import android.webkit.WebView
 import androidx.webkit.Profile
 import androidx.webkit.ProfileStore
+import androidx.webkit.ScriptHandler
 import androidx.webkit.UserAgentMetadata
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import app.sealed.model.BrowserSettings
 import app.sealed.model.PixelPersona
+import org.json.JSONObject
+import java.util.Collections
+import java.util.WeakHashMap
 
 object ProfileIsolation {
-    private val sensorScripts = java.util.Collections.newSetFromMap(java.util.WeakHashMap<WebView, Boolean>())
+    private val sensorHandles = Collections.synchronizedMap(WeakHashMap<WebView, ScriptHandler>())
 
     fun supported(): Boolean = WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)
 
@@ -30,23 +34,24 @@ object ProfileIsolation {
         profile.cookieManager.setAcceptThirdPartyCookies(webView, !settings.blockThirdPartyCookies)
         profile.serviceWorkerController.setServiceWorkerClient(object : ServiceWorkerClient() {
             override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? {
-                return blockedResponse(request.url.toString(), settings, siteHost, navigation = false)
+                return blockedResponse(request.url.toString(), settings, siteHost, navigation = request.isForMainFrame)
             }
         })
         installReferrer(webView, settings)
+        installDocumentPolicy(webView, settings)
+        installWebRtc(webView, settings)
         installSensor(webView, settings)
         return profile
     }
 
     fun installSensor(webView: WebView, settings: BrowserSettings) {
-        if (!settings.usesSensorSpoof()) return
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
-        val script = SensorGate.script(settings)
-        if (!sensorScripts.add(webView)) {
-            webView.evaluateJavascript(script, null)
-            return
+        sensorHandles.remove(webView)?.let { handle ->
+            runCatching { handle.remove() }
         }
-        WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("*"))
+        if (!settings.usesSensorSpoof()) return
+        val handle = WebViewCompat.addDocumentStartJavaScript(webView, SensorGate.script(settings), setOf("*"))
+        sensorHandles[webView] = handle
     }
 
     fun installLogin(webView: WebView, host: String, username: String, password: String) {
@@ -55,7 +60,7 @@ object ProfileIsolation {
         WebViewCompat.addDocumentStartJavaScript(
             webView,
             LoginFill.script(username, password),
-            setOf("https://$host", "https://*.$host"),
+            setOf("https://$host"),
         )
     }
 
@@ -104,10 +109,12 @@ object ProfileIsolation {
     }
 
     fun delete(profileName: String) {
-        if (!supported()) return
-        val store = ProfileStore.getInstance()
-        if (store.getProfile(profileName) != null) {
-            store.deleteProfile(profileName)
+        runCatching {
+            if (!supported()) return
+            val store = ProfileStore.getInstance()
+            if (store.getProfile(profileName) != null) {
+                store.deleteProfile(profileName)
+            }
         }
     }
 
@@ -176,6 +183,8 @@ object ProfileIsolation {
     fun applyClientHints(webView: WebView, browser: BrowserSettings, desktop: Boolean) {
         if (!browser.pixelPersona) return
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) return
+        webView.settings.userAgentString =
+            if (desktop) PixelPersona.DESKTOP_AGENT else browser.resolvedUserAgent()
         WebSettingsCompat.setUserAgentMetadata(webView.settings, metadata(desktop))
     }
 
@@ -206,8 +215,9 @@ object ProfileIsolation {
 
     private fun installReferrer(webView: WebView, settings: BrowserSettings) {
         val token = RequestGate.referrerToken(RequestGate.referrerMode(settings.referrerPolicy)) ?: return
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
-        val script = """
+        addStartScript(
+            webView,
+            """
             (function(){
               try {
                 var root = document.head || document.documentElement;
@@ -218,7 +228,46 @@ object ProfileIsolation {
                 root.insertBefore(meta, root.firstChild);
               } catch (e) {}
             })();
-        """.trimIndent()
+            """.trimIndent(),
+        )
+    }
+
+    private fun installDocumentPolicy(webView: WebView, settings: BrowserSettings) {
+        val lang = JSONObject.quote(settings.language.ifBlank { "en-US" })
+        val dnt = if (settings.doNotTrack) {
+            """try { Object.defineProperty(navigator, "doNotTrack", { configurable: true, get: function(){ return "1"; } }); } catch (e) {}"""
+        } else {
+            ""
+        }
+        val gpc = if (settings.globalPrivacyControl) {
+            """try { Object.defineProperty(navigator, "globalPrivacyControl", { configurable: true, get: function(){ return true; } }); } catch (e) {}"""
+        } else {
+            ""
+        }
+        addStartScript(
+            webView,
+            """
+            (function(){
+              var lang = $lang;
+              var langs = Object.freeze([lang, String(lang).split("-")[0]]);
+              try {
+                Object.defineProperty(navigator, "language", { configurable: true, get: function(){ return lang; } });
+                Object.defineProperty(navigator, "languages", { configurable: true, get: function(){ return langs; } });
+              } catch (e) {}
+              $dnt
+              $gpc
+            })();
+            """.trimIndent(),
+        )
+    }
+
+    private fun installWebRtc(webView: WebView, settings: BrowserSettings) {
+        if (!settings.blockWebRtcLan) return
+        addStartScript(webView, WebRtcGate.script())
+    }
+
+    private fun addStartScript(webView: WebView, script: String) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
         WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("*"))
     }
 

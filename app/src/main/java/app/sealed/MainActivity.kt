@@ -39,14 +39,16 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import app.sealed.data.BlockLog
 import app.sealed.data.SecretStore
 import app.sealed.data.SettingsRepository
@@ -55,6 +57,8 @@ import app.sealed.model.InstalledWebApp
 import app.sealed.ui.BrowserSettingsScreen
 import app.sealed.ui.SiteLogin
 import app.sealed.ui.theme.SealedTheme
+import app.sealed.ui.theme.applyColorScheme
+import app.sealed.web.InAppDownload
 import app.sealed.web.ProfileIsolation
 import app.sealed.web.UrlPolicy
 
@@ -64,9 +68,14 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val repo = WebAppRepository(this)
         val defaults = SettingsRepository(this)
+        applyColorScheme(defaults.defaults().colorScheme)
         setContent {
-            SealedTheme {
-                Home(repo, defaults)
+            var scheme by remember { mutableStateOf(defaults.defaults().colorScheme) }
+            SealedTheme(colorScheme = scheme) {
+                Home(repo, defaults, onScheme = { next ->
+                    scheme = next
+                    applyColorScheme(next)
+                })
             }
         }
     }
@@ -74,14 +83,29 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun Home(repo: WebAppRepository, defaults: SettingsRepository) {
+private fun Home(
+    repo: WebAppRepository,
+    defaults: SettingsRepository,
+    onScheme: (String) -> Unit,
+) {
     val activity = androidx.compose.ui.platform.LocalContext.current as ComponentActivity
     var apps by remember { mutableStateOf(repo.list()) }
     var showAdd by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<InstalledWebApp?>(null) }
     var editingDefaults by remember { mutableStateOf(false) }
     val profiles = ProfileIsolation.supported()
-    val secrets = SecretStore(activity)
+    val secrets = remember { SecretStore(activity) }
+
+    DisposableEffect(repo) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                apps = repo.list()
+                onScheme(defaults.defaults().colorScheme)
+            }
+        }
+        activity.lifecycle.addObserver(observer)
+        onDispose { activity.lifecycle.removeObserver(observer) }
+    }
 
     editing?.let { app ->
         BrowserSettingsScreen(
@@ -112,6 +136,7 @@ private fun Home(repo: WebAppRepository, defaults: SettingsRepository) {
             onBack = { editingDefaults = false },
             onSave = {
                 defaults.saveDefaults(it)
+                onScheme(it.colorScheme)
                 editingDefaults = false
             },
         )
@@ -169,6 +194,7 @@ private fun Home(repo: WebAppRepository, defaults: SettingsRepository) {
                         onDelete = {
                             ProfileIsolation.delete(app.profileName)
                             BlockLog(activity).delete(app.profileName)
+                            InAppDownload.deleteProfile(activity, app.profileName)
                             secrets.delete(app.id)
                             repo.delete(app.id)
                             apps = repo.list()
